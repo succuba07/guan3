@@ -1,0 +1,64 @@
+data:
+    image_size: 64
+    channels: 3
+    training_keep_image_size: False
+    testing_keep_image_size: True
+    num_workers: 4
+    train_data_dir: '/root/shared-nvme/ss2_all/train/'  # path to directory of train data
+    test_data_dir: '/root/shared-nvme/ss2_all/test/'  # path to directory of test data
+
+  # 其他配置...
+    test_save_dir: '/root/shared-nvme/ss2_all/result/'
+    val_save_dir: '/root/shared-nvme/ss2_all/validation/'
+
+    grid_r: 12  #网格分辨率 每个小块尺寸12×12
+    conditional: True
+    tensorboard: '/root/shared-nvme/ss2_all/diffusion_model/logs'
+
+model:
+    in_channels: 3
+    out_ch: 3
+    ch: 128
+    ch_mult: [1, 2, 3, 4]
+    num_res_blocks: 2
+    attn_resolutions: [16, ]  #注意力机制分辨率（层）：16乘16分辨率层加入
+    dropout: 0.0
+    ema_rate: 0.999
+    ema: True
+    resamp_with_conv: True
+    use_vlb: False
+    learn_sigma: False
+
+diffusion:
+    beta_schedule: linear  #使用线性噪声调度，即每一步增加的噪声量是均匀增长的。
+    beta_start: 0.0001
+    beta_end: 0.02
+    num_diffusion_timesteps: 1000  
+
+training:
+    patch_n: 8  #8个小块
+    batch_size: 6  #一次处理6对数据
+    n_epochs: 500
+    n_iters: 150000   #总迭代步数=(总数据集对数/batch_size)×总epoch数，总共运行了多少步=模型更新了多少次参数
+    snapshot_freq: 30  # model save frequency
+    validation_freq: 10000  # validation frequency
+    resume: '/root/shared-nvme/ss2_all/diffusion_model/'  # path to save the model .pth
+    seed: 61 # random seed
+    amp: False # automatic mixed precision
+    init_scale: 2.0 ** 16
+
+sampling:
+    batch_size: 1 
+    last_only: True
+    sampling_timesteps: 50  #推理时去噪步数
+
+optim:
+    weight_decay: 0.000
+    optimizer: "Adam"    #优化器：时间步（Step Count）动态调整每个参数的学习率
+    lr: 0.00001
+    warmup_epochs: 20
+    lr_schedule: "cosine"
+    amsgrad: False
+    eps: 0.00000001
+    min_lr: 0.000001          # 最小学习率 (1e-7~1e-8)
+    decay_epochs: 480       # 在xx个epoch内完成衰减
