@@ -204,6 +204,39 @@ class DenoisingDiffusion(object):
             self.ema_helper.ema(self.model)
         print("=> loaded checkpoint '{}' (epoch {}, step {})".format(load_path, checkpoint['epoch'], self.step))
 
+    def skeleton_guided_fusion(self, raw_output, skeleton, patch_locs, patch_size):
+        """
+        基于骨架指导拼接patch，骨架区域的像素在重叠部分权重更高
+        raw_output: 原始拼接结果（可能存在重叠区域冲突）
+        skeleton: 骨架图像（单通道，值越高表示越重要）
+        patch_locs: 所有patch的左上角坐标列表 [(h1, w1), (h2, w2), ...]
+        patch_size: 单个patch的尺寸
+        """
+        # 初始化融合结果和权重掩码
+        fused = torch.zeros_like(raw_output)
+        weight_mask = torch.zeros_like(raw_output)  # 记录每个像素的权重和
+
+        # 骨架归一化到[0,1]，作为权重基础
+        skeleton_norm = (skeleton - skeleton.min()) / (skeleton.max() - skeleton.min() + 1e-8)
+        # 扩展骨架通道数以匹配输出（假设输出为3通道）
+        skeleton_norm = skeleton_norm.repeat(1, 3, 1, 1)  # [B, 3, H, W]
+
+        for (hi, wi) in patch_locs:
+            # 提取当前patch在原始输出中的区域
+            patch = raw_output[:, :, hi:hi+patch_size, wi:wi+patch_size]
+            # 提取当前patch区域对应的骨架权重
+            skeleton_patch = skeleton_norm[:, :, hi:hi+patch_size, wi:wi+patch_size]
+            # 骨架权重 + 基础权重（避免零权重）
+            patch_weight = skeleton_patch + 1e-3  # 基础权重确保非骨架区域也能被保留
+
+            # 累加带权重的像素值和权重掩码
+            fused[:, :, hi:hi+patch_size, wi:wi+patch_size] += patch * patch_weight
+            weight_mask[:, :, hi:hi+patch_size, wi:wi+patch_size] += patch_weight
+
+        # 除以总权重得到最终融合结果
+        fused = fused / weight_mask.clamp(min=1e-8)  # 防止除零
+        return fused
+
     def train(self, DATASET):
         cudnn.benchmark = True
         train_loader, val_loader = DATASET.get_loaders()
@@ -219,7 +252,7 @@ class DenoisingDiffusion(object):
             data_start = time.time()
             data_time = 0
             train_loader.sampler.set_epoch(epoch)
-            for i, (x, y) in enumerate(train_loader):
+            for i, (x,skeleton,y) in enumerate(train_loader):
                 x = x.flatten(start_dim=0, end_dim=1) if x.ndim == 5 else x
                 n = x.size(0)
                 data_time += time.time() - data_start
@@ -228,7 +261,7 @@ class DenoisingDiffusion(object):
 
                 x = x.to(self.device)
                 x = data_transform(x)
-                e = torch.randn_like(x[:, 3:, :, :])
+                e = torch.randn_like(x[:, 3:, :, :])   #gt训练循环中噪声生成（确保与gt_img通道匹配）
                 b = self.betas
 
                 # antithetic sampling
@@ -239,7 +272,7 @@ class DenoisingDiffusion(object):
 
                 self.optimizer.zero_grad()
 
-                # 混合精度训练
+                # 混合精度训练---暂时不修改通道数，因为amp、vlb暂时false
                 if self.amp:
                     with torch.cuda.amp.autocast():
                         if self.use_vlb:
@@ -331,16 +364,22 @@ class DenoisingDiffusion(object):
                 'scaler': self.loss_scaler.state_dict() if self.amp else None
             }, filename=self.config.training.resume)
 
-    def sample_image(self, x_cond, x, last=True, patch_locs=None, patch_size=None):
+    def sample_image(self, x_cond, x, last=True, patch_locs=None, patch_size=None,skeleton=None):
         skip = self.config.diffusion.num_diffusion_timesteps // self.config.sampling.sampling_timesteps
         seq = range(0, self.config.diffusion.num_diffusion_timesteps, skip)
         if patch_locs is not None:
             xs = utils.sampling.generalized_steps_overlapping(x, x_cond, seq, self.model, self.betas, eta=0.,
                                                               corners=patch_locs, p_size=patch_size, device=self.device,
                                                               gen_diffusion=self.gen_diffusion)
+            # 若传入骨架，使用骨架指导patch拼接
+            if skeleton is not None:
+                # 取最后一步的生成结果（xs[0]是图像序列，[-1]是最终结果）
+                raw_output = xs[0][-1]
+                # 调用基于骨架的融合函数，调整重叠区域
+                fused_output =self.skeleton_guided_fusion(raw_output,skeleton,patch_locs,patch_size)
+                xs = (fused_output.unsqueeze(0), x0_preds)  # 保持返回格式一致
         else:
             xs = utils.sampling.generalized_steps(x, x_cond, seq, self.model, self.betas, eta=0., device=self.device)
-        if last:
             xs = xs[0][-1]
         return xs
 
@@ -349,12 +388,13 @@ class DenoisingDiffusion(object):
         with torch.no_grad():
             if dist.get_rank() == 0:
                 print(f"Processing a single batch of validation images at step: {step}")
-            for i, (x, y) in enumerate(val_loader):
+            for i, (x,skeleton,y) in enumerate(val_loader):
                 x = x.flatten(start_dim=0, end_dim=1) if x.ndim == 5 else x
                 break
             n = x.size(0)
             x_cond = x[:, :3, :, :].to(self.device)  # 条件图像
             x_gt = x[:, 3:, :, :].to(self.device)  # GT图像
+
             x_cond = data_transform(x_cond)
             x = torch.randn(n, 3, self.config.data.image_size, self.config.data.image_size, device=self.device)
             if self.use_vlb:
@@ -362,7 +402,7 @@ class DenoisingDiffusion(object):
                     self.model.forward, x.shape, x, clip_denoised=False, model_kwargs=dict(c=x_cond), progress=False,
                 )
             else:
-                x = self.sample_image(x_cond, x)
+                x = self.sample_image(x_cond, x,skeleton)
             x = inverse_data_transform(x)
             x_cond = inverse_data_transform(x_cond)
 

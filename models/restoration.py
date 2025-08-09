@@ -29,20 +29,26 @@ class DiffusiveRestoration:
     def restore(self, val_loader, r=None):
         image_folder = self.config.data.test_save_dir
         with torch.no_grad():
-            for i, (x, y) in tqdm(enumerate(val_loader)):
+            for i, (x,y,skeleton) in tqdm(enumerate(val_loader)):
                 print(f"=> starting processing image named {y}", flush=True)
                 x = x.flatten(start_dim=0, end_dim=1) if x.ndim == 5 else x
                 x_cond = x[:, :3, :, :].to(self.diffusion.device)
-                x_output = self.diffusive_restoration(x_cond, r=r)
+                skeleton = skeleton.to(self.diffusion.device)  # 骨架张量与x_cond同设备
+                x_output = self.diffusive_restoration(x_cond, r=r,skeleton=skeleton)
                 x_output = inverse_data_transform(x_output)
                 utils.logging.save_image(x_output, os.path.join(image_folder, f"{y[0]}.png"))
 
-    def diffusive_restoration(self, x_cond, r=None):
+    def diffusive_restoration(self, x_cond, r=None,skeleton=None):
         p_size = self.config.data.image_size
         h_list, w_list = self.overlapping_grid_indices(x_cond, output_size=p_size, r=r)
         corners = [(i, j) for i in h_list for j in w_list]
-        x = torch.randn(x_cond.size(), device=self.diffusion.device)
-        x_output = self.diffusion.sample_image(x_cond, x, patch_locs=corners, patch_size=p_size)
+        # x = torch.randn(x_cond.size(), device=self.diffusion.device)
+        # 噪声形状：(batch_size, 3, height, width)，与gt_img通道一致
+        x = torch.randn(
+            (x_cond.shape[0], 3, x_cond.shape[2], x_cond.shape[3]),  # 保持batch_size、高、宽与x_cond一致，通道数改为3
+            device=self.diffusion.device
+        )
+        x_output = self.diffusion.sample_image(x_cond, x, patch_locs=corners, patch_size=p_size,skeleton=skeleton)
         return x_output
 
     def overlapping_grid_indices(self, x_cond, output_size, r=None):

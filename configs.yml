@@ -4,19 +4,19 @@ data:
     training_keep_image_size: False
     testing_keep_image_size: True
     num_workers: 4
-    train_data_dir: '/root/shared-nvme/ss2_all/train/'  # path to directory of train data
-    test_data_dir: '/root/shared-nvme/ss2_all/test/'  # path to directory of test data
+    train_data_dir: '/root/shared-nvme/bi_all/train/'  # path to directory of train data
+    test_data_dir: '/root/shared-nvme/bi_all/test/'  # path to directory of test data
 
   # 其他配置...
-    test_save_dir: '/root/shared-nvme/ss2_all/result/'
-    val_save_dir: '/root/shared-nvme/ss2_all/validation/'
+    test_save_dir: '/root/shared-nvme/bi_all/result/'
+    val_save_dir: '/root/shared-nvme/bi_all/validation/'
 
     grid_r: 12  #网格分辨率 每个小块尺寸12×12
-    conditional: True
-    tensorboard: '/root/shared-nvme/ss2_all/diffusion_model/logs'
+    conditional: False
+    tensorboard: '/root/shared-nvme/bi_all/diffusion_model/logs'
 
 model:
-    in_channels: 3
+    in_channels: 6
     out_ch: 3
     ch: 128
     ch_mult: [1, 2, 3, 4]
@@ -42,7 +42,7 @@ training:
     n_iters: 150000   #总迭代步数=(总数据集对数/batch_size)×总epoch数，总共运行了多少步=模型更新了多少次参数
     snapshot_freq: 30  # model save frequency
     validation_freq: 10000  # validation frequency
-    resume: '/root/shared-nvme/ss2_all/diffusion_model/'  # path to save the model .pth
+    resume: '/root/shared-nvme/bi_all/diffusion_model/'  # path to save the model .pth
     seed: 61 # random seed
     amp: False # automatic mixed precision
     init_scale: 2.0 ** 16

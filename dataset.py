@@ -8,6 +8,7 @@ import PIL.Image
 import re
 import random
 from torch.utils.data.distributed import DistributedSampler
+from utils.skeleton_extractor import SkeletonExtractor  # 导入骨架提取器
 
 
 class Data:
@@ -81,6 +82,7 @@ class MyDataset(torch.utils.data.Dataset):
         self.grid_r = int(grid_r)
         self.keep_image_size = keep_image_size
         self.parse_patches = parse_patches
+        self.skeleton_extractor = SkeletonExtractor()  # 初始化骨架提取器
 
     @staticmethod
     def get_params(img, output_size, n):
@@ -105,14 +107,22 @@ class MyDataset(torch.utils.data.Dataset):
         input_name = self.input_names[index]
         gt_name = self.gt_names[index]
         img_id = re.split('/', input_name)[-1][:-4]
+        
         input_img = PIL.Image.open(os.path.join(self.dir, 'input', input_name)).convert(
             'RGB') if self.dir else PIL.Image.open(input_name)
         gt_img = PIL.Image.open(os.path.join(self.dir, 'target', gt_name)).convert(
             'RGB') if self.dir else PIL.Image.open(gt_name)
+        
+
+        # 自动提取骨架图像（从input_img中）
+        skeleton_img = self.skeleton_extractor.extract(input_img)
+       
+
 
         if not self.keep_image_size:
             input_img = input_img.resize((100, 100), PIL.Image.Resampling.BILINEAR)
             gt_img = gt_img.resize((100, 100), PIL.Image.Resampling.BILINEAR)
+            skeleton_img = skeleton_img.resize((100,100), PIL.Image.Resampling.BILINEAR)  # 同步缩放
         else:
             wd_new, ht_new = input_img.size
             wd_new = int(self.grid_r * np.ceil(wd_new / float(self.grid_r)))
@@ -120,20 +130,24 @@ class MyDataset(torch.utils.data.Dataset):
             assert wd_new >= self.patch_size and ht_new >= self.patch_size
             input_img = input_img.resize((wd_new, ht_new), PIL.Image.Resampling.BILINEAR)
             gt_img = gt_img.resize((wd_new, ht_new), PIL.Image.Resampling.BILINEAR)
+            skeleton_img = skeleton_img.resize((wd_new, ht_new), PIL.Image.Resampling.BILINEAR)  # 同步缩放
 
         if self.parse_patches:
             i, j, h, w = self.get_params(input_img, (self.patch_size, self.patch_size), self.n)
             input_img = self.n_random_crops(input_img, i, j, h, w)
             gt_img = self.n_random_crops(gt_img, i, j, h, w)
-            outputs = [torch.cat([self.transforms(input_img[i]), self.transforms(gt_img[i])], dim=0)
+            # 对骨架图像仅做transform，不分割（保持整图）
+            skeleton_img = self.transforms(skeleton_img)
+            
+            outputs = [torch.cat([self.transforms(input_img[i]),self.transforms(gt_img[i])], dim=0)
                        for i in range(self.n)]
-            return torch.stack(outputs, dim=0), img_id
+            return torch.stack(outputs, dim=0),skeleton_img, img_id
 
         else:
             wd_new, ht_new = input_img.size
             if ht_new > wd_new and ht_new > 1024:
                 wd_new = int(np.ceil(wd_new * 1024 / ht_new))
-                ht_new = 102
+                ht_new = 1024
             elif ht_new <= wd_new and wd_new > 1024:
                 ht_new = int(np.ceil(ht_new * 1024 / wd_new))
                 wd_new = 1024
@@ -141,7 +155,9 @@ class MyDataset(torch.utils.data.Dataset):
             ht_new = int(np.ceil((ht_new - self.patch_size) / float(self.grid_r)) * self.grid_r + self.patch_size)
             input_img = input_img.resize((wd_new, ht_new), PIL.Image.Resampling.BILINEAR)
             gt_img = gt_img.resize((wd_new, ht_new), PIL.Image.Resampling.BILINEAR)
-            return torch.cat([self.transforms(input_img), self.transforms(gt_img)], dim=0), img_id
+            skeleton_img = skeleton_img.resize((wd_new, ht_new),PIL.Image.Resampling.BILINEAR)
+            #新增骨架条件
+            return torch.cat([self.transforms(input_img),self.transforms(gt_img)], dim=0),self.transforms(skeleton_img), img_id
 
     def __getitem__(self, index):
         res = self.get_images(index)
